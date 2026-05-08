@@ -1,0 +1,10 @@
+{
+  "name": "vizstack",
+  "version": "0.1.0",
+  "description": "Visualize your Remix or Next.js app's routes, database, AI providers, and external APIs",
+  "bin": {
+    "vizstack": "./parse.js"
+  },
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}

@@ -1,0 +1,551 @@
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>__TITLE__ — codebase-viz</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  background: #0d1117; color: #c9d1d9;
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+}
+header {
+  padding: 10px 20px; border-bottom: 1px solid #21262d;
+  display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+}
+.logo   { color: #58a6ff; font-weight: 700; font-size: 13px; }
+.proj   { color: #6e7681; font-size: 12px; }
+.fw     { color: #d2a8ff; font-size: 11px; background: #161b22; padding: 2px 8px; border-radius: 3px; border: 1px solid #30363d; }
+.legend { display: flex; gap: 14px; margin-left: auto; align-items: center; flex-wrap: wrap; }
+.leg    { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #6e7681; }
+.leg-line { width: 18px; height: 2px; border-radius: 1px; }
+.leg-line.read     { background: #58a6ff; }
+.leg-line.write    { background: #e3b341; }
+.leg-line.ai       { background: #56d364; }
+.leg-line.shared   { background: #8b949e; }
+.leg-line.external { border-top: 2px dashed #6e7681; height: 0; }
+
+.main-wrap { flex: 1; display: flex; overflow: hidden; }
+.ecosystem-wrap { flex: 1; overflow: auto; position: relative; }
+.ecosystem { display: flex; min-height: 100%; position: relative; padding: 24px 16px; gap: 36px; }
+
+#svg-lines {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; overflow: visible;
+}
+
+.col       { display: flex; flex-direction: column; gap: 7px; min-width: 170px; flex: 1; max-width: 260px; }
+.col-header { font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+              color: #6e7681; margin-bottom: 6px; padding-bottom: 8px; border-bottom: 1px solid #21262d; }
+
+/* ── Nodes ───────────────────────────────────────────────────────────────── */
+.node {
+  padding: 7px 9px; border: 1px solid #21262d; border-radius: 4px;
+  cursor: pointer; transition: border-color .15s, opacity .15s; background: #161b22;
+  font-size: 12px; line-height: 1.4;
+}
+.node.dimmed      { opacity: .15; }
+.node.highlighted { border-color: #58a6ff !important; }
+.node:hover       { border-color: #444c56; }
+
+.node-label  { color: #c9d1d9; word-break: break-all; }
+.node-file   { font-size: 10px; color: #6e7681; margin-top: 2px; word-break: break-all; }
+.node-badges { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+
+.badge      { font-size: 9px; padding: 1px 5px; border-radius: 2px; font-weight: 700; }
+.badge-L    { background: #0d419d; color: #58a6ff; }
+.badge-A    { background: #3d2200; color: #e3b341; }
+.badge-UI   { background: #1a1a2e; color: #d2a8ff; }
+.badge-auth { background: #1a0d00; color: #e3b341; font-size: 8px; }
+
+.badge-SVC  { background: #1a2a2a; color: #56d364; }
+.badge-COMP { background: #2a1a2a; color: #d2a8ff; }
+
+/* category colour spots */
+.cat-db      { border-left: 2px solid #56d364 !important; }
+.cat-ai      { border-left: 2px solid #d2a8ff !important; }
+.cat-auth    { border-left: 2px solid #e3b341 !important; }
+.cat-email   { border-left: 2px solid #58a6ff !important; }
+.cat-payment { border-left: 2px solid #ffa657 !important; }
+.cat-component { border-left: 2px solid #8b949e !important; }
+
+.node.db-node     { border-color: #1a2a3a; }
+.node.ai-node     { border-color: #0d2b0d; }
+.node.ext-node    { border-color: #2a1a0d; }
+.node.shared-node { border-color: #1e1e30; }
+
+/* ── Route groups ────────────────────────────────────────────────────────── */
+.group-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; cursor: pointer; user-select: none;
+  color: #8b949e; font-size: 11px; border: 1px solid #21262d;
+  border-radius: 4px; background: #0d1117; margin-top: 2px;
+}
+.group-header:hover { background: #161b22; color: #c9d1d9; }
+.group-toggle { font-size: 9px; opacity: .7; }
+.group-name   { flex: 1; font-weight: 600; }
+.group-count  { font-size: 10px; background: #21262d; padding: 1px 6px; border-radius: 10px; color: #6e7681; }
+.group-routes { display: flex; flex-direction: column; gap: 6px; padding-left: 10px; }
+.group-routes.collapsed { display: none; }
+
+/* ── Info panel ──────────────────────────────────────────────────────────── */
+.info-panel {
+  width: 300px; flex-shrink: 0; border-left: 1px solid #21262d;
+  background: #0d1117; overflow-y: auto; padding: 16px; font-size: 12px;
+}
+.info-empty  { height: 100%; display: flex; align-items: center; justify-content: center;
+               color: #6e7681; font-size: 12px; text-align: center; line-height: 1.6; }
+.info-content { display: none; }
+
+.ip-layer-tag {
+  font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 2px; display: inline-block; margin-bottom: 8px;
+}
+.tag-routes  { background: #1a2a3a; color: #58a6ff; }
+.tag-db      { background: #1a2a1a; color: #56d364; }
+.tag-ai      { background: #1a1a2e; color: #d2a8ff; }
+.tag-ext     { background: #2a1a0d; color: #e3b341; }
+.tag-shared  { background: #1e1e2e; color: #8b949e; }
+
+.ip-title    { font-size: 14px; font-weight: 600; color: #e6edf3; margin-bottom: 4px; word-break: break-all; }
+.ip-file     { font-size: 10px; color: #6e7681; margin-bottom: 12px; word-break: break-all; }
+.ip-section  { margin-bottom: 12px; }
+.ip-section-label {
+  font-size: 9px; font-weight: 700; letter-spacing: .08em;
+  text-transform: uppercase; color: #6e7681; margin-bottom: 6px;
+}
+
+.kv-list { display: flex; flex-direction: column; gap: 3px; }
+.kv-row  { display: flex; gap: 8px; font-size: 11px; align-items: baseline; }
+.kv-key  { color: #6e7681; min-width: 60px; flex-shrink: 0; }
+.kv-val  { color: #c9d1d9; word-break: break-all; }
+
+.field-list   { display: flex; flex-direction: column; gap: 3px; }
+.field-row    { display: flex; gap: 8px; font-size: 11px; align-items: baseline; }
+.field-name   { color: #c9d1d9; min-width: 100px; flex-shrink: 0; font-size: 11px; }
+.field-type   { font-size: 10px; padding: 1px 4px; border-radius: 2px; background: #21262d; }
+.field-opt    { color: #6e7681; font-size: 10px; }
+.t-string     { color: #79c0ff; }
+.t-int,.t-float,.t-decimal,.t-bigint { color: #ffa657; }
+.t-boolean    { color: #ff7b72; }
+.t-datetime   { color: #56d364; }
+.t-json       { color: #d2a8ff; }
+.t-other      { color: #8b949e; }
+
+.conn-list { display: flex; flex-direction: column; gap: 5px; }
+.conn-item { display: flex; align-items: flex-start; gap: 6px; font-size: 11px; }
+.conn-dot  { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-top: 4px; }
+.conn-dot.read     { background: #58a6ff; }
+.conn-dot.write    { background: #e3b341; }
+.conn-dot.ai       { background: #56d364; }
+.conn-dot.external { background: #e3b341; opacity: .6; }
+.conn-dot.shared   { background: #8b949e; }
+.conn-dot.neutral  { background: #6e7681; }
+.conn-dir    { color: #6e7681; }
+.conn-target { color: #c9d1d9; word-break: break-all; }
+.conn-label  { color: #6e7681; font-size: 10px; }
+
+.import-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.import-count { font-size: 20px; font-weight: 700; color: #c9d1d9; }
+.import-label { font-size: 10px; color: #6e7681; }
+
+.timing-pill {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 9px; padding: 1px 5px; border-radius: 8px;
+  font-weight: 600; margin-top: 4px; letter-spacing: 0.02em;
+}
+.t-user    { background: #091a00; color: #56d364; border: 1px solid #1a3d00; }
+.t-event   { background: #1a0800; color: #e3b341; border: 1px solid #3d1800; }
+.t-polled  { background: #091832; color: #79c0ff; border: 1px solid #1a3060; }
+.t-async   { background: #130d2a; color: #d2a8ff; border: 1px solid #2d1b69; }
+
+/* ── Stats bar ───────────────────────────────────────────────────────────── */
+.stats-bar {
+  display: flex; gap: 16px; padding: 7px 20px; border-top: 1px solid #21262d;
+  font-size: 11px; color: #6e7681; flex-shrink: 0; flex-wrap: wrap;
+}
+.stat span { color: #c9d1d9; font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">codebase-viz</div>
+  <div class="proj">__PROJECT__</div>
+  <div class="fw">__FRAMEWORK__</div>
+  <div class="legend">
+    <div class="leg"><div class="leg-line read"></div>read</div>
+    <div class="leg"><div class="leg-line write"></div>write</div>
+    <div class="leg"><div class="leg-line ai"></div>AI call</div>
+    <div class="leg"><div class="leg-line shared"></div>uses</div>
+    <div class="leg"><div class="leg-line external"></div>external</div>
+  </div>
+</header>
+
+<div class="main-wrap">
+  <div class="ecosystem-wrap" id="wrap">
+    <div class="ecosystem" id="ecosystem">
+      <svg id="svg-lines"></svg>
+
+      <div class="col" id="col-routes">
+        <div class="col-header">Routes (__ROUTE_COUNT__)</div>
+      </div>
+      <div class="col" id="col-shared">
+        <div class="col-header">Services (__SHARED_COUNT__)</div>
+      </div>
+      <div class="col" id="col-db">
+        <div class="col-header">Database (__DB_COUNT__)</div>
+      </div>
+      <div class="col" id="col-ai">
+        <div class="col-header">AI (__AI_COUNT__)</div>
+      </div>
+      <div class="col" id="col-ext">
+        <div class="col-header">External (__EXT_COUNT__)</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="info-panel">
+    <div class="info-empty" id="info-empty">Hover a node<br>to see details</div>
+    <div class="info-content" id="info-content"></div>
+  </div>
+</div>
+
+<div class="stats-bar">
+  <div class="stat">Routes <span id="s-routes">0</span></div>
+  <div class="stat">DB tables <span id="s-tables">0</span></div>
+  <div class="stat">AI <span id="s-ai">0</span></div>
+  <div class="stat">External <span id="s-ext">0</span></div>
+  <div class="stat">Services <span id="s-shared">0</span></div>
+  <div class="stat">Connections <span id="s-edges">0</span></div>
+</div>
+
+<script>
+const DATA   = __DATA_JSON__;
+const NODES  = DATA.nodes;
+const EDGES  = DATA.edges;
+
+// ── Node creation ────────────────────────────────────────────────────────
+
+function createNodeEl(id, node) {
+  const el = document.createElement('div');
+  el.id = id;
+  el.className = `node ${node.layer}-node${node.category ? ' cat-' + node.category : ''}`;
+  const badges = (node.badges || []).map(b => `<span class="badge badge-${b}">${b}</span>`).join('');
+  const auth   = node.authGated ? '<span class="badge badge-auth">🔒 auth</span>' : '';
+  const tagBadge = node.tag && !['DB','AI','API'].includes(node.tag)
+    ? `<span class="badge badge-${node.tag}">${node.tag}</span>` : '';
+  const countBadge = node.importCount
+    ? `<span style="font-size:9px;color:#6e7681">used by ${node.importCount}</span>` : '';
+  const triggerPill = node.trigger && node.trigger.type !== 'user'
+    ? `<div class="timing-pill t-${node.trigger.type}">${node.trigger.label}</div>` : '';
+  el.innerHTML = `
+    <div class="node-label">${node.label}</div>
+    ${node.file ? `<div class="node-file">${node.file}</div>` : ''}
+    ${badges || auth || tagBadge || countBadge
+      ? `<div class="node-badges">${badges}${auth}${tagBadge}${countBadge}</div>`
+      : ''}
+    ${triggerPill}
+  `;
+  el.addEventListener('mouseenter', () => onHover(id));
+  el.addEventListener('mouseleave', () => onLeave());
+  return el;
+}
+
+// ── Render nodes ─────────────────────────────────────────────────────────
+
+function renderNodes() {
+  const byLayer = { routes: [], db: [], ai: [], ext: [], shared: [] };
+  for (const [id, node] of Object.entries(NODES)) {
+    (byLayer[node.layer] || byLayer.ext).push([id, node]);
+  }
+
+  byLayer.routes.sort((a, b) => a[1].url.localeCompare(b[1].url));
+  byLayer.shared.sort((a, b) => (b[1].importCount || 0) - (a[1].importCount || 0));
+
+  const useGroups = byLayer.routes.length > 30;
+
+  if (useGroups) {
+    renderRouteGroups(byLayer.routes);
+  } else {
+    const col = document.getElementById('col-routes');
+    for (const [id, node] of byLayer.routes) col.appendChild(createNodeEl(id, node));
+  }
+
+  // Services column
+  if (byLayer.shared.length === 0) {
+    document.getElementById('col-shared').style.display = 'none';
+  } else {
+    const colS = document.getElementById('col-shared');
+    for (const [id, node] of byLayer.shared) colS.appendChild(createNodeEl(id, node));
+  }
+
+  const colIds = { db: 'col-db', ai: 'col-ai', ext: 'col-ext' };
+  for (const [layer, colId] of Object.entries(colIds)) {
+    const col = document.getElementById(colId);
+    if (!byLayer[layer].length) { col.style.display = 'none'; continue; }
+    for (const [id, node] of byLayer[layer]) col.appendChild(createNodeEl(id, node));
+  }
+
+  document.getElementById('s-routes').textContent = byLayer.routes.length;
+  document.getElementById('s-tables').textContent = byLayer.db.length;
+  document.getElementById('s-ai').textContent     = byLayer.ai.length;
+  document.getElementById('s-ext').textContent    = byLayer.ext.length;
+  document.getElementById('s-shared').textContent = byLayer.shared.length;
+  document.getElementById('s-edges').textContent  = EDGES.length;
+}
+
+function renderRouteGroups(routes) {
+  const col = document.getElementById('col-routes');
+  const groups = {};
+  for (const [id, node] of routes) {
+    const g = node.group || 'root';
+    (groups[g] = groups[g] || []).push([id, node]);
+  }
+
+  const sorted = Object.entries(groups).sort(([a], [b]) => a === 'root' ? -1 : b === 'root' ? 1 : a.localeCompare(b));
+  let firstExpanded = false;
+
+  for (const [groupName, items] of sorted) {
+    const header = document.createElement('div');
+    header.className = 'group-header';
+    const isExpanded = !firstExpanded || items.length <= 3;
+    firstExpanded = true;
+    header.innerHTML = `
+      <span class="group-toggle">${isExpanded ? '▼' : '▶'}</span>
+      <span class="group-name">/${groupName === 'root' ? '' : groupName}</span>
+      <span class="group-count">${items.length}</span>
+    `;
+    col.appendChild(header);
+
+    const groupEl = document.createElement('div');
+    groupEl.className = 'group-routes' + (isExpanded ? '' : ' collapsed');
+    for (const [id, node] of items) groupEl.appendChild(createNodeEl(id, node));
+    col.appendChild(groupEl);
+
+    header.addEventListener('click', () => {
+      const collapsed = groupEl.classList.toggle('collapsed');
+      header.querySelector('.group-toggle').textContent = collapsed ? '▶' : '▼';
+      drawEdges(null);
+    });
+  }
+}
+
+// ── SVG edge drawing ─────────────────────────────────────────────────────
+
+const EDGE_COLORS = {
+  read: '#58a6ff', write: '#e3b341', ai: '#56d364',
+  external: '#6e7681', shared: '#444c56',
+};
+
+function isVisible(el) {
+  return el && el.offsetParent !== null;
+}
+
+function drawEdges(hoveredId) {
+  const svg   = document.getElementById('svg-lines');
+  const wrap  = document.getElementById('wrap');
+  const eco   = document.getElementById('ecosystem');
+  const wrapR = wrap.getBoundingClientRect();
+  svg.innerHTML = '';
+
+  const edgesToDraw = hoveredId
+    ? EDGES.filter(e => e.from === hoveredId || e.to === hoveredId)
+    : EDGES;
+
+  for (const e of edgesToDraw) {
+    const fromEl = document.getElementById(e.from);
+    const toEl   = document.getElementById(e.to);
+    if (!fromEl || !toEl || !isVisible(fromEl) || !isVisible(toEl)) continue;
+
+    const fR = fromEl.getBoundingClientRect();
+    const tR = toEl.getBoundingClientRect();
+    const fx = fR.right  - wrapR.left + wrap.scrollLeft;
+    const fy = fR.top    + fR.height / 2 - wrapR.top  + wrap.scrollTop;
+    const tx = tR.left   - wrapR.left + wrap.scrollLeft;
+    const ty = tR.top    + tR.height / 2 - wrapR.top  + wrap.scrollTop;
+    const cx = (fx + tx) / 2;
+
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', `M ${fx} ${fy} C ${cx} ${fy}, ${cx} ${ty}, ${tx} ${ty}`);
+    p.setAttribute('stroke', EDGE_COLORS[e.type] || '#6e7681');
+    p.setAttribute('stroke-width', hoveredId ? '1.5' : '0.8');
+    p.setAttribute('fill', 'none');
+    p.setAttribute('opacity', hoveredId ? '0.9' : '0.25');
+    if (e.type === 'external') p.setAttribute('stroke-dasharray', '4 3');
+    if (e.type === 'shared')   p.setAttribute('stroke-dasharray', '2 3');
+    svg.appendChild(p);
+  }
+}
+
+// ── Info panel ────────────────────────────────────────────────────────────
+
+function section(label, body) {
+  if (!body) return '';
+  return `<div class="ip-section"><div class="ip-section-label">${label}</div>${body}</div>`;
+}
+
+function typeClass(t) {
+  if (!t) return 't-other';
+  const u = t.toLowerCase();
+  if (u === 'string')   return 't-string';
+  if (u === 'boolean')  return 't-boolean';
+  if (u === 'datetime') return 't-datetime';
+  if (u === 'json')     return 't-json';
+  if (['int','float','decimal','bigint'].includes(u)) return 't-int';
+  return 't-other';
+}
+
+function renderFields(fields) {
+  if (!fields || !fields.length) return '<span style="color:#6e7681;font-size:11px">No schema data</span>';
+  return `<div class="field-list">${fields.map(f => `
+    <div class="field-row">
+      <span class="field-name">${f.name}</span>
+      <span class="field-type ${typeClass(f.type)}">${f.type}</span>
+      ${f.optional ? '<span class="field-opt">?</span>' : ''}
+    </div>`).join('')}</div>`;
+}
+
+function connDots(items, type) {
+  return (items || []).map(t =>
+    `<div class="conn-item"><div class="conn-dot ${type}"></div><span class="conn-target">${t}</span></div>`
+  ).join('');
+}
+
+function showInfo(id) {
+  const d = NODES[id];
+  if (!d) return;
+
+  const layerLabel = { routes: 'Route', db: 'Database', ai: 'AI', ext: 'External API', shared: 'Service' };
+  const tagClass   = { routes: 'tag-routes', db: 'tag-db', ai: 'tag-ai', ext: 'tag-ext', shared: 'tag-shared' };
+  const badges = (d.badges || []).map(b => `<span class="badge badge-${b}">${b}</span>`).join('');
+  const auth   = d.authGated ? '<span class="badge badge-auth">🔒 auth</span>' : '';
+  const tagBadge = d.tag && !['DB','AI','API'].includes(d.tag) ? `<span class="badge badge-${d.tag}">${d.tag}</span>` : '';
+
+  let body = '';
+
+  if (d.layer === 'routes') {
+    body += section('Route', `<div class="kv-list">
+      <div class="kv-row"><span class="kv-key">URL</span><span class="kv-val">${d.url}</span></div>
+      <div class="kv-row"><span class="kv-key">File</span><span class="kv-val" style="font-size:10px">${d.file || '—'}</span></div>
+      <div class="kv-row"><span class="kv-key">Group</span><span class="kv-val">/${d.group || 'root'}</span></div>
+      ${d.trigger ? `<div class="kv-row"><span class="kv-key">Trigger</span><span class="kv-val"><span class="timing-pill t-${d.trigger.type}" style="margin-top:0">${d.trigger.label}</span></span></div>` : ''}
+    </div>`);
+    const dbRd = connDots(d.dbReads, 'read');
+    const dbWr = connDots(d.dbWrites, 'write');
+    const ai   = connDots(d.aiCalls, 'ai');
+    const ext  = connDots(d.external, 'external');
+    if (dbRd)  body += section(`DB reads (${d.dbReads.length})`,   `<div class="conn-list">${dbRd}</div>`);
+    if (dbWr)  body += section(`DB writes (${d.dbWrites.length})`, `<div class="conn-list">${dbWr}</div>`);
+    if (ai)    body += section('AI calls',     `<div class="conn-list">${ai}</div>`);
+    if (ext)   body += section('External',     `<div class="conn-list">${ext}</div>`);
+    const sharedEdges = EDGES.filter(e => e.from === id && e.type === 'shared');
+    if (sharedEdges.length) {
+      body += section(`Services used (${sharedEdges.length})`, `<div class="conn-list">` +
+        sharedEdges.map(e => `<div class="conn-item"><div class="conn-dot shared"></div><span class="conn-target">${NODES[e.to]?.label || e.to}</span></div>`).join('') +
+        `</div>`);
+    }
+  }
+
+  else if (d.layer === 'db') {
+    const hasSchema = d.fields && d.fields.length > 0;
+    body += section(
+      `Fields${d.fieldCount != null ? ` (${d.fieldCount})` : ''}`,
+      renderFields(d.fields)
+    );
+    if (d.relations && d.relations.length) {
+      body += section('Relations', `<div class="conn-list">` +
+        d.relations.map(r =>
+          `<div class="conn-item"><div class="conn-dot neutral"></div><span class="conn-target">${r.model}${r.isArray ? '[ ]' : ''}</span></div>`
+        ).join('') + `</div>`);
+    }
+    const rd = connDots(d.readers, 'read');
+    const wr = connDots(d.writers, 'write');
+    if (rd) body += section(`Readers (${d.readers.length})`, `<div class="conn-list">${rd}</div>`);
+    if (wr) body += section(`Writers (${d.writers.length})`, `<div class="conn-list">${wr}</div>`);
+  }
+
+  else if (d.layer === 'shared') {
+    body += `<div class="import-bar">
+      <div class="import-count">${d.importCount}</div>
+      <div class="import-label">routes import this</div>
+    </div>`;
+    body += section('Module', `<div class="kv-list">
+      <div class="kv-row"><span class="kv-key">File</span><span class="kv-val" style="font-size:10px">${d.file}</span></div>
+      <div class="kv-row"><span class="kv-key">Category</span><span class="kv-val">${d.category || 'util'}</span></div>
+    </div>`);
+    if (d.importedByUrls && d.importedByUrls.length) {
+      const items = d.importedByUrls.slice(0, 20).map(url =>
+        `<div class="conn-item"><div class="conn-dot shared"></div><span class="conn-target">${url}</span></div>`
+      ).join('');
+      const more = d.importedByUrls.length > 20
+        ? `<div style="color:#6e7681;font-size:10px;margin-top:4px">+${d.importedByUrls.length - 20} more</div>` : '';
+      body += section(`Imported by (${d.importedByUrls.length})`, `<div class="conn-list">${items}${more}</div>`);
+    }
+  }
+
+  else if (d.layer === 'ai') {
+    const callers = EDGES.filter(e => e.to === id).map(e => NODES[e.from]?.url || e.from);
+    if (callers.length) {
+      body += section(`Called by (${callers.length})`, `<div class="conn-list">` +
+        callers.map(url => `<div class="conn-item"><div class="conn-dot ai"></div><span class="conn-target">${url}</span></div>`).join('') +
+        `</div>`);
+    }
+  }
+
+  else if (d.layer === 'ext') {
+    const callers = EDGES.filter(e => e.to === id).map(e => NODES[e.from]?.url || e.from);
+    if (callers.length) {
+      body += section(`Called by (${callers.length})`, `<div class="conn-list">` +
+        callers.map(url => `<div class="conn-item"><div class="conn-dot external"></div><span class="conn-target">${url}</span></div>`).join('') +
+        `</div>`);
+    }
+  }
+
+  document.getElementById('info-empty').style.display = 'none';
+  const content = document.getElementById('info-content');
+  content.style.display = 'block';
+  content.innerHTML = `
+    <div class="ip-layer-tag ${tagClass[d.layer] || 'tag-shared'}">${layerLabel[d.layer] || d.layer}</div>
+    <div class="ip-title">${d.label}</div>
+    ${d.file ? `<div class="ip-file">${d.file}</div>` : ''}
+    ${badges || auth || tagBadge ? `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px">${badges}${auth}${tagBadge}</div>` : ''}
+    ${body}
+  `;
+}
+
+function clearInfo() {
+  document.getElementById('info-empty').style.display   = 'flex';
+  document.getElementById('info-content').style.display = 'none';
+}
+
+// ── Interaction ───────────────────────────────────────────────────────────
+
+let hoveredId = null;
+
+function onHover(id) {
+  hoveredId = id;
+  const connected = new Set([id, ...EDGES.filter(e => e.from === id || e.to === id).flatMap(e => [e.from, e.to])]);
+  document.querySelectorAll('.node').forEach(n => {
+    n.classList.toggle('dimmed',      !connected.has(n.id));
+    n.classList.toggle('highlighted', n.id === id);
+  });
+  drawEdges(id);
+  showInfo(id);
+}
+
+function onLeave() {
+  hoveredId = null;
+  document.querySelectorAll('.node').forEach(n => n.classList.remove('dimmed', 'highlighted'));
+  drawEdges(null);
+  clearInfo();
+}
+
+renderNodes();
+
+document.getElementById('wrap').addEventListener('scroll', () => drawEdges(hoveredId));
+window.addEventListener('load',   () => setTimeout(() => drawEdges(null), 150));
+window.addEventListener('resize', () => drawEdges(null));
+</script>
+</body>
+</html>
