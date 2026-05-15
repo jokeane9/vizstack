@@ -40,6 +40,24 @@ Hover any node to highlight its connections and open a detail panel. Edges are c
 | [Taxonomy](https://github.com/shadcn-ui/taxonomy) | 28 | 2 | 0 | 1 |
 | [Inbox Zero](https://github.com/elie222/inbox-zero) | 253 | 49 | 4 | 6 |
 
+## Architecture chat (optional add-on)
+
+`chat-template.html` is a standalone example showing how to wire your graph data directly into an LLM chat panel — so you can ask questions about your own architecture and get answers that are grounded in the actual dependency map, not generic knowledge.
+
+**How it works:** `NODE_DATA` and `EDGES` are already in the page as JS objects. When a message is sent, those objects are serialised into a Claude system prompt. The model has the full graph as context before it sees your first question. Pin a node to inject its connections as focused context.
+
+**To use it:**
+1. Replace the example `NODE_DATA` and `EDGES` in `chat-template.html` with your own architecture.
+2. Deploy one of the proxies in `proxy-example/` — your API key lives there, never in the browser.
+3. Set `PROXY_ENDPOINT` at the top of the file to your deployed URL.
+4. Open it in a browser.
+
+Two proxy options are included:
+- `proxy-example/lambda.mjs` — AWS Lambda + API Gateway. ~$0 at personal-tool scale.
+- `proxy-example/worker.js` — Cloudflare Worker. Free tier covers 100k requests/day.
+
+Both check the request origin server-side and support an optional shared secret (`x-proxy-secret`) to block scripted callers.
+
 ## License
 
 MIT

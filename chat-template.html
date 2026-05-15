@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vizstack — architecture chat</title>
+
+<!--
+  vizstack / chat-template.html
+  ─────────────────────────────
+  A self-contained example showing how to wire architecture graph data
+  directly into an LLM chat panel.
+
+  HOW IT WORKS
+  ────────────
+  1. Your graph (NODE_DATA + EDGES) is already in the page as JS objects.
+  2. When the user sends a message, those objects are serialised into a
+     Claude system prompt — the model gets the full architecture as context
+     before it sees the first question.
+  3. Pinning a node injects that node's connections as focused context.
+  4. API calls go through a thin server-side proxy (never expose keys in
+     the browser). Two reference implementations are in proxy-example/.
+
+  TO USE THIS
+  ───────────
+  1. Replace NODE_DATA and EDGES below with your own architecture.
+  2. Deploy one of the proxies in proxy-example/ (Lambda or CF Worker).
+  3. Set PROXY_ENDPOINT to your deployed URL.
+  4. Open the file in a browser. No build step, no server, no npm.
+-->
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  background: #0d1117; color: #c9d1d9;
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+}
+
+header {
+  padding: 10px 20px; border-bottom: 1px solid #21262d;
+  display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+}
+.logo    { color: #58a6ff; font-weight: 700; font-size: 13px; }
+.project { color: #6e7681; font-size: 12px; }
+.legend  { display: flex; gap: 14px; margin-left: auto; align-items: center; }
+.leg     { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #6e7681; }
+.leg-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+.main-wrap { flex: 1; display: flex; overflow: hidden; }
+
+/* ── Graph canvas ── */
+.graph-wrap { flex: 1; overflow: auto; position: relative; }
+.graph {
+  display: flex; min-height: 100%;
+  position: relative; padding: 28px 24px; gap: 40px;
+}
+#svg-lines {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; overflow: visible;
+}
+
+.col { display: flex; flex-direction: column; gap: 8px; min-width: 160px; max-width: 220px; }
+.col-header {
+  font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: #6e7681; margin-bottom: 4px; padding-bottom: 8px; border-bottom: 1px solid #21262d;
+}
+
+/* ── Nodes ── */
+.node {
+  padding: 8px 10px; border: 1px solid #21262d; border-radius: 5px;
+  cursor: pointer; transition: border-color .15s, opacity .15s, box-shadow .15s;
+  background: #161b22; font-size: 12px; line-height: 1.4;
+}
+.node.dimmed      { opacity: .12; }
+.node.highlighted { border-color: #58a6ff !important; }
+.node.pinned      { border-color: #58a6ff !important; box-shadow: 0 0 0 3px rgba(88,166,255,.2); }
+.node:hover       { border-color: #444c56; }
+
+.node-label { color: #c9d1d9; font-weight: 500; }
+.node-sub   { font-size: 10px; color: #6e7681; margin-top: 2px; }
+
+.col-ui     .node { border-left: 3px solid #3d2060; }
+.col-routes .node { border-left: 3px solid #1f4068; }
+.col-db     .node { border-left: 3px solid #1a3000; }
+.col-ai     .node { border-left: 3px solid #2d1b69; }
+.col-ext    .node { border-left: 3px solid #3d1500; }
+
+.col-ui     .node .node-label { color: #bc8cff; }
+.col-routes .node .node-label { color: #79c0ff; }
+.col-db     .node .node-label { color: #56d364; }
+.col-ai     .node .node-label { color: #d2a8ff; }
+.col-ext    .node .node-label { color: #e3b341; }
+
+/* ── Right panel ── */
+.right-panel {
+  width: 320px; flex-shrink: 0; border-left: 1px solid #21262d;
+  background: #0d1117; display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* Inspector pane */
+#inspector-pane { flex: 1; overflow-y: auto; }
+.info-empty {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; color: #6e7681; font-size: 12px;
+  text-align: center; padding: 40px 20px; line-height: 1.8;
+}
+.ip-header { padding: 14px 16px 10px; border-bottom: 1px solid #21262d; }
+.ip-layer  {
+  font-size: 9px; font-weight: 700; letter-spacing: .1em;
+  text-transform: uppercase; padding: 2px 7px; border-radius: 10px;
+  display: inline-block; margin-bottom: 6px;
+}
+.tag-ui     { background: #1e0d3d; color: #bc8cff; }
+.tag-routes { background: #0d2d6e; color: #79c0ff; }
+.tag-db     { background: #0a2000; color: #56d364; }
+.tag-ai     { background: #1a0d3d; color: #d2a8ff; }
+.tag-ext    { background: #3d1500; color: #e3b341; }
+.ip-title   { font-size: 14px; color: #e6edf3; font-weight: 600; margin-bottom: 3px; }
+.ip-desc    { font-size: 11px; color: #8b949e; line-height: 1.6; padding: 10px 16px; border-bottom: 1px solid #21262d; }
+.ip-section { padding: 10px 16px; border-bottom: 1px solid #21262d; }
+.ip-section-title {
+  font-size: 9px; font-weight: 700; letter-spacing: .08em;
+  text-transform: uppercase; color: #6e7681; margin-bottom: 6px;
+}
+.conn-list { display: flex; flex-direction: column; gap: 5px; }
+.conn-item { display: flex; align-items: flex-start; gap: 7px; font-size: 11px; }
+.conn-dot  { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-top: 4px; }
+.conn-dot.read     { background: #58a6ff; }
+.conn-dot.write    { background: #e3b341; }
+.conn-dot.ai       { background: #56d364; }
+.conn-dot.external { background: #e3b341; opacity: .6; }
+.conn-dot.trigger  { background: #d2a8ff; }
+.conn-dir    { color: #6e7681; flex-shrink: 0; }
+.conn-target { color: #c9d1d9; }
+.conn-label  { color: #6e7681; font-size: 10px; }
+
+/* ── Chat pane ── */
+#chat-pane {
+  flex: 1; display: flex; flex-direction: column; overflow: hidden;
+  border-top: 1px solid #21262d;
+}
+.chat-header {
+  padding: 8px 12px; background: #161b22; border-bottom: 1px solid #21262d;
+  font-size: 10px; color: #6e7681; flex-shrink: 0; display: flex; align-items: center; gap: 6px;
+}
+.chat-header-pin { color: #58a6ff; }
+#chat-messages {
+  flex: 1; overflow-y: auto; padding: 12px;
+  display: flex; flex-direction: column; gap: 10px; min-height: 0;
+}
+.chat-welcome {
+  font-size: 11px; color: #6e7681; line-height: 1.7;
+  background: #161b22; border: 1px solid #21262d;
+  border-radius: 6px; padding: 10px 12px;
+}
+.chat-welcome strong { color: #c9d1d9; }
+.chat-msg { font-size: 12px; line-height: 1.6; }
+.chat-msg.user {
+  background: #161b22; border: 1px solid #21262d; border-radius: 8px;
+  padding: 8px 10px; color: #e6edf3; align-self: flex-end; max-width: 92%;
+}
+.chat-msg.assistant { color: #c9d1d9; padding: 2px 0; }
+.chat-msg.assistant code {
+  background: #161b22; border: 1px solid #21262d; border-radius: 3px;
+  padding: 1px 5px; font-size: 11px; color: #79c0ff;
+}
+.chat-msg.thinking { color: #6e7681; font-style: italic; font-size: 11px; }
+
+/* Config / unconfigured state */
+#chat-unconfigured {
+  padding: 20px 16px; display: flex; flex-direction: column; gap: 10px;
+}
+#chat-unconfigured p { font-size: 11px; color: #6e7681; line-height: 1.7; }
+#chat-unconfigured code {
+  background: #161b22; border: 1px solid #21262d; border-radius: 3px;
+  padding: 1px 5px; font-size: 11px; color: #e3b341; display: inline-block;
+}
+
+#chat-input-area {
+  border-top: 1px solid #21262d; padding: 10px;
+  display: flex; flex-direction: column; gap: 6px;
+  flex-shrink: 0; background: #0d1117;
+}
+#chat-input {
+  background: #161b22; border: 1px solid #21262d; border-radius: 6px;
+  color: #c9d1d9; font-family: inherit; font-size: 12px;
+  padding: 8px 10px; resize: none; height: 58px;
+  outline: none; width: 100%; transition: border-color .1s;
+}
+#chat-input:focus { border-color: #30363d; }
+.chat-send-row { display: flex; justify-content: space-between; align-items: center; }
+#chat-send-btn {
+  background: #1f6feb; border: none; border-radius: 5px;
+  color: #fff; cursor: pointer; font-family: inherit;
+  font-size: 11px; font-weight: 600; padding: 5px 14px; transition: background .1s;
+}
+#chat-send-btn:hover { background: #388bfd; }
+#chat-send-btn:disabled { background: #21262d; color: #6e7681; cursor: default; }
+.chat-hint { font-size: 10px; color: #6e7681; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">⬡ vizstack</span>
+  <span class="project">example app — architecture + chat</span>
+  <div class="legend">
+    <div class="leg"><div class="leg-dot" style="background:#79c0ff"></div>API</div>
+    <div class="leg"><div class="leg-dot" style="background:#56d364"></div>DB</div>
+    <div class="leg"><div class="leg-dot" style="background:#d2a8ff"></div>AI</div>
+    <div class="leg"><div class="leg-dot" style="background:#e3b341"></div>External</div>
+  </div>
+</header>
+
+<div class="main-wrap">
+  <!-- ── Graph ── -->
+  <div class="graph-wrap" id="wrap">
+    <div class="graph" id="graph">
+      <svg id="svg-lines"></svg>
+
+      <div class="col col-ui">
+        <div class="col-header">Frontend</div>
+        <div class="node" id="n-frontend">
+          <div class="node-label">React App</div>
+          <div class="node-sub">src/App.tsx</div>
+        </div>
+      </div>
+
+      <div class="col col-routes">
+        <div class="col-header">API</div>
+        <div class="node" id="n-api">
+          <div class="node-label">Express API</div>
+          <div class="node-sub">src/server.ts</div>
+        </div>
+        <div class="node" id="n-worker">
+          <div class="node-label">Background Worker</div>
+          <div class="node-sub">src/worker.ts</div>
+        </div>
+      </div>
+
+      <div class="col col-db">
+        <div class="col-header">Data</div>
+        <div class="node" id="n-postgres">
+          <div class="node-label">PostgreSQL</div>
+          <div class="node-sub">primary database</div>
+        </div>
+        <div class="node" id="n-redis">
+          <div class="node-label">Redis</div>
+          <div class="node-sub">cache + queues</div>
+        </div>
+      </div>
+
+      <div class="col col-ai">
+        <div class="col-header">AI</div>
+        <div class="node" id="n-claude">
+          <div class="node-label">Claude</div>
+          <div class="node-sub">anthropic API</div>
+        </div>
+      </div>
+
+      <div class="col col-ext">
+        <div class="col-header">External</div>
+        <div class="node" id="n-stripe">
+          <div class="node-label">Stripe</div>
+          <div class="node-sub">payments</div>
+        </div>
+        <div class="node" id="n-email">
+          <div class="node-label">Resend</div>
+          <div class="node-sub">transactional email</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Right panel: Inspector + Chat ── -->
+  <div class="right-panel">
+    <div id="inspector-pane">
+      <div class="info-empty" id="info-empty">← Hover any node<br>to inspect it<br><br><span style="font-size:10px">Click to pin</span></div>
+      <div id="info-content" style="display:none"></div>
+    </div>
+
+    <div id="chat-pane">
+      <div class="chat-header">
+        <span>✦ Architecture chat</span>
+        <span class="chat-header-pin" id="chat-pin-label"></span>
+      </div>
+
+      <!--
+        UNCONFIGURED STATE
+        Shown when PROXY_ENDPOINT is still the placeholder.
+        Replace PROXY_ENDPOINT below with your real proxy URL and this
+        block disappears automatically.
+      -->
+      <div id="chat-unconfigured" style="display:none">
+        <p>
+          Set <code>PROXY_ENDPOINT</code> at the top of this file to
+          enable the chat panel. Two ready-to-deploy proxy options live
+          in <code>proxy-example/</code>:
+        </p>
+        <p>
+          <code>lambda.mjs</code> — AWS Lambda + API Gateway<br>
+          <code>worker.js</code> — Cloudflare Worker
+        </p>
+        <p>
+          The proxy forwards requests to the Anthropic API server-side
+          so your key never touches the browser.
+        </p>
+      </div>
+
+      <div id="chat-messages" style="display:none"></div>
+      <div id="chat-input-area" style="display:none">
+        <textarea id="chat-input"
+          placeholder="Ask about this node, trace a bug, check data flow… (pin a node first for focused context)"
+          onkeydown="handleChatKey(event)"></textarea>
+        <div class="chat-send-row">
+          <span class="chat-hint">⌘↵ to send</span>
+          <button id="chat-send-btn" onclick="sendChat()">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIGURATION
+// Replace with your deployed proxy URL. The proxy forwards requests to the
+// Anthropic API server-side — your API key lives there, not here.
+// See proxy-example/ for ready-to-deploy Lambda and Cloudflare Worker code.
+// ─────────────────────────────────────────────────────────────────────────────
+const PROXY_ENDPOINT = 'YOUR_PROXY_ENDPOINT_HERE';
+
+// Optional: a shared secret your proxy checks (x-proxy-secret header).
+// Leave empty if your proxy uses origin-check only.
+const PROXY_SECRET = '';
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GRAPH DATA
+// Replace NODE_DATA and EDGES with your own architecture.
+//
+// NODE_DATA: one entry per node.
+//   layer       — 'ui' | 'routes' | 'db' | 'ai' | 'ext'  (controls column + colour)
+//   label       — display name
+//   description — shown in inspector panel and injected into the system prompt
+//   file        — optional source file path
+//
+// EDGES: connections between nodes.
+//   from, to    — keys from NODE_DATA
+//   type        — 'read' | 'write' | 'ai' | 'external' | 'trigger'
+//   label       — short description of the relationship
+// ─────────────────────────────────────────────────────────────────────────────
+const NODE_DATA = {
+  'n-frontend': {
+    layer: 'ui', label: 'React App',
+    description: 'Browser SPA. Calls the Express API over REST. Handles auth state via JWT stored in memory (not localStorage). All data fetching goes through /api routes.',
+    file: 'src/App.tsx',
+  },
+  'n-api': {
+    layer: 'routes', label: 'Express API',
+    description: 'Main application server. Validates JWTs, handles all business logic, reads/writes Postgres, checks Redis for cached responses before hitting the DB. Queues background jobs via Redis BullMQ.',
+    file: 'src/server.ts',
+  },
+  'n-worker': {
+    layer: 'routes', label: 'Background Worker',
+    description: 'Pulls jobs from Redis BullMQ queues. Handles async work: sending emails, running AI analysis, processing webhooks. Writes results back to Postgres.',
+    file: 'src/worker.ts',
+  },
+  'n-postgres': {
+    layer: 'db', label: 'PostgreSQL',
+    description: 'Primary datastore. Managed via Prisma. Tables: users, accounts, jobs, results, events. The API both reads and writes; the worker writes job results.',
+    file: 'prisma/schema.prisma',
+  },
+  'n-redis': {
+    layer: 'db', label: 'Redis',
+    description: 'Dual-purpose: (1) response cache — API checks here before hitting Postgres, TTL 5 min; (2) BullMQ job queue — API enqueues, worker dequeues.',
+    file: 'src/lib/redis.ts',
+  },
+  'n-claude': {
+    layer: 'ai', label: 'Claude',
+    description: 'Anthropic API. Called by the background worker — never directly from the API route. Receives structured job payloads, returns JSON analysis. Model: claude-sonnet-4-5.',
+    file: 'src/worker.ts',
+  },
+  'n-stripe': {
+    layer: 'ext', label: 'Stripe',
+    description: 'Payments and subscriptions. API calls Stripe on checkout and plan changes. Stripe sends webhooks to /api/webhooks/stripe — worker processes them.',
+    file: 'src/lib/stripe.ts',
+  },
+  'n-email': {
+    layer: 'ext', label: 'Resend',
+    description: 'Transactional email. Worker sends emails after job completion, on payment events, and for auth flows. Never called directly from API routes.',
+    file: 'src/lib/email.ts',
+  },
+};
+
+const EDGES = [
+  { from: 'n-frontend', to: 'n-api',      type: 'read',     label: 'REST calls' },
+  { from: 'n-api',      to: 'n-postgres',  type: 'read',     label: 'queries' },
+  { from: 'n-api',      to: 'n-postgres',  type: 'write',    label: 'mutations' },
+  { from: 'n-api',      to: 'n-redis',     type: 'read',     label: 'cache check' },
+  { from: 'n-api',      to: 'n-redis',     type: 'write',    label: 'enqueue jobs' },
+  { from: 'n-api',      to: 'n-stripe',    type: 'external', label: 'checkout + plans' },
+  { from: 'n-worker',   to: 'n-redis',     type: 'read',     label: 'dequeue jobs' },
+  { from: 'n-worker',   to: 'n-postgres',  type: 'write',    label: 'write results' },
+  { from: 'n-worker',   to: 'n-claude',    type: 'ai',       label: 'analysis' },
+  { from: 'n-worker',   to: 'n-email',     type: 'external', label: 'send emails' },
+  { from: 'n-stripe',   to: 'n-worker',    type: 'trigger',  label: 'webhooks' },
+];
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SYSTEM PROMPT BUILDER
+// Serialises NODE_DATA + EDGES into a system prompt so Claude has full
+// architecture context before the user types anything.
+// If a node is pinned, its connections get injected as focused context.
+// ─────────────────────────────────────────────────────────────────────────────
+function buildSystemPrompt() {
+  const nodeLines = Object.entries(NODE_DATA).map(([id, d]) => {
+    const conns = EDGES
+      .filter(e => e.from === id || e.to === id)
+      .map(e => {
+        const otherId = e.from === id ? e.to : e.from;
+        const dir     = e.from === id ? '→' : '←';
+        const label   = NODE_DATA[otherId]?.label || otherId;
+        return `${dir} ${label} (${e.type}: ${e.label})`;
+      });
+    return (
+      `[${d.layer}] ${d.label} (${id})${d.file ? ' — ' + d.file : ''}` +
+      (d.description ? `\n  ${d.description}` : '') +
+      (conns.length  ? `\n  Connections: ${conns.join(' · ')}` : '')
+    );
+  }).join('\n\n');
+
+  let pinnedCtx = '';
+  if (pinnedId && NODE_DATA[pinnedId]) {
+    const d = NODE_DATA[pinnedId];
+    const conns = EDGES
+      .filter(e => e.from === pinnedId || e.to === pinnedId)
+      .map(e => {
+        const otherId = e.from === pinnedId ? e.to : e.from;
+        const dir     = e.from === pinnedId ? 'outbound' : 'inbound';
+        return `  - ${dir} ${e.type} → ${NODE_DATA[otherId]?.label || otherId} (${e.label})`;
+      });
+    pinnedCtx =
+      `\n\nUSER HAS PINNED: ${d.label} (${pinnedId})\nLayer: ${d.layer}` +
+      (d.file        ? `\nFile: ${d.file}`               : '') +
+      (d.description ? `\nDescription: ${d.description}` : '') +
+      (conns.length  ? `\nConnections:\n${conns.join('\n')}` : '');
+  }
+
+  return (
+    `You are an expert on this application's architecture. ` +
+    `You know every node, every edge, and every data flow from the dependency map below. ` +
+    `Help the user trace bugs, understand data flows, and reason about the system. ` +
+    `Be concise. Reference node names in backticks. ` +
+    `When tracing a bug or a data flow, walk through layers step by step.\n\n` +
+    `FULL ARCHITECTURE:\n${nodeLines}${pinnedCtx}`
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EDGE DRAWING
+// ─────────────────────────────────────────────────────────────────────────────
+const EDGE_COLORS = {
+  read: '#58a6ff', write: '#e3b341', ai: '#56d364',
+  external: '#e3b341', trigger: '#d2a8ff',
+};
+
+function drawEdges(focusId) {
+  const svg  = document.getElementById('svg-lines');
+  const wrap = document.getElementById('wrap');
+  const wrapR = wrap.getBoundingClientRect();
+  svg.innerHTML = '';
+
+  const edges = focusId
+    ? EDGES.filter(e => e.from === focusId || e.to === focusId)
+    : EDGES;
+
+  for (const e of edges) {
+    const fEl = document.getElementById(e.from);
+    const tEl = document.getElementById(e.to);
+    if (!fEl || !tEl) continue;
+
+    const fR = fEl.getBoundingClientRect();
+    const tR = tEl.getBoundingClientRect();
+    const fx = fR.right  - wrapR.left + wrap.scrollLeft;
+    const fy = fR.top    + fR.height / 2 - wrapR.top + wrap.scrollTop;
+    const tx = tR.left   - wrapR.left + wrap.scrollLeft;
+    const ty = tR.top    + tR.height / 2 - wrapR.top + wrap.scrollTop;
+    const cx = (fx + tx) / 2;
+
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', `M ${fx} ${fy} C ${cx} ${fy}, ${cx} ${ty}, ${tx} ${ty}`);
+    p.setAttribute('stroke', EDGE_COLORS[e.type] || '#6e7681');
+    p.setAttribute('stroke-width', focusId ? '1.5' : '0.8');
+    p.setAttribute('fill', 'none');
+    p.setAttribute('opacity', focusId ? '0.9' : '0.2');
+    if (e.type === 'external') p.setAttribute('stroke-dasharray', '4 3');
+    svg.appendChild(p);
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INSPECTOR PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+function showInfo(id) {
+  const d = NODE_DATA[id];
+  if (!d) return;
+
+  const TAG_CLASS = { ui: 'tag-ui', routes: 'tag-routes', db: 'tag-db', ai: 'tag-ai', ext: 'tag-ext' };
+  const TAG_LABEL = { ui: 'Frontend', routes: 'API / Worker', db: 'Data', ai: 'AI', ext: 'External' };
+
+  const conns = EDGES.filter(e => e.from === id || e.to === id);
+  const connHTML = conns.map(e => {
+    const isFrom  = e.from === id;
+    const otherId = isFrom ? e.to : e.from;
+    const dir     = isFrom ? '→' : '←';
+    const label   = NODE_DATA[otherId]?.label || otherId;
+    return `<div class="conn-item">
+      <div class="conn-dot ${e.type}"></div>
+      <span class="conn-dir">${dir}</span>
+      <div>
+        <div class="conn-target">${label}</div>
+        <div class="conn-label">${e.label}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('info-empty').style.display = 'none';
+  const content = document.getElementById('info-content');
+  content.style.display = 'block';
+  content.innerHTML = `
+    <div class="ip-header">
+      <span class="ip-layer ${TAG_CLASS[d.layer] || ''}">${TAG_LABEL[d.layer] || d.layer}</span>
+      <div class="ip-title">${d.label}</div>
+      ${d.file ? `<div style="font-size:10px;color:#6e7681;margin-top:2px">${d.file}</div>` : ''}
+    </div>
+    ${d.description ? `<div class="ip-desc">${d.description}</div>` : ''}
+    ${connHTML ? `<div class="ip-section">
+      <div class="ip-section-title">Connections</div>
+      <div class="conn-list">${connHTML}</div>
+    </div>` : ''}
+  `;
+}
+
+function clearInfo() {
+  document.getElementById('info-empty').style.display = 'flex';
+  document.getElementById('info-content').style.display = 'none';
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INTERACTION — hover + click-to-pin
+// ─────────────────────────────────────────────────────────────────────────────
+let hoveredId = null;
+let pinnedId  = null;
+
+function applyFocus(id) {
+  document.querySelectorAll('.node').forEach(n => {
+    const connected = n.id === id ||
+      EDGES.some(e => (e.from === id && e.to === n.id) || (e.to === id && e.from === n.id));
+    n.classList.toggle('dimmed',      !connected);
+    n.classList.toggle('highlighted', n.id === id);
+  });
+  drawEdges(id);
+  showInfo(id);
+}
+
+function clearFocus() {
+  document.querySelectorAll('.node').forEach(n => n.classList.remove('dimmed', 'highlighted'));
+  drawEdges(null);
+  clearInfo();
+}
+
+document.querySelectorAll('.node').forEach(node => {
+  node.addEventListener('mouseenter', () => {
+    hoveredId = node.id;
+    applyFocus(node.id);
+  });
+  node.addEventListener('mouseleave', () => {
+    hoveredId = null;
+    pinnedId ? applyFocus(pinnedId) : clearFocus();
+  });
+  node.addEventListener('click', e => {
+    e.stopPropagation();
+    if (pinnedId === node.id) {
+      node.classList.remove('pinned');
+      pinnedId = null;
+    } else {
+      document.getElementById(pinnedId)?.classList.remove('pinned');
+      pinnedId = node.id;
+      node.classList.add('pinned');
+    }
+    updateChatHeader();
+  });
+});
+
+document.getElementById('wrap').addEventListener('click', () => {
+  if (pinnedId) {
+    document.getElementById(pinnedId)?.classList.remove('pinned');
+    pinnedId = null;
+    if (!hoveredId) clearFocus();
+    updateChatHeader();
+  }
+});
+
+document.getElementById('wrap').addEventListener('scroll', () => drawEdges(hoveredId ?? pinnedId));
+window.addEventListener('load',   () => setTimeout(() => drawEdges(null), 50));
+window.addEventListener('resize', () => drawEdges(null));
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHAT
+// ─────────────────────────────────────────────────────────────────────────────
+let chatHistory = [];
+let chatLoading = false;
+const configured = PROXY_ENDPOINT !== 'YOUR_PROXY_ENDPOINT_HERE';
+
+function updateChatHeader() {
+  const label = document.getElementById('chat-pin-label');
+  if (!label) return;
+  label.textContent = pinnedId && NODE_DATA[pinnedId]
+    ? `· ${NODE_DATA[pinnedId].label} pinned`
+    : '';
+}
+
+function initChat() {
+  if (!configured) {
+    document.getElementById('chat-unconfigured').style.display = 'flex';
+    document.getElementById('chat-messages').style.display     = 'none';
+    document.getElementById('chat-input-area').style.display   = 'none';
+    return;
+  }
+
+  document.getElementById('chat-unconfigured').style.display = 'none';
+  document.getElementById('chat-messages').style.display     = 'flex';
+  document.getElementById('chat-input-area').style.display   = 'flex';
+
+  if (chatHistory.length === 0) {
+    const msgs = document.getElementById('chat-messages');
+    msgs.innerHTML = `<div class="chat-welcome">
+      <strong>Architecture-aware chat</strong><br>
+      The full dependency graph is already in context. Pin a node to focus on it,
+      then ask anything — trace a bug, follow a data flow, understand a dependency.
+    </div>`;
+  }
+}
+
+function renderMessages() {
+  if (chatHistory.length === 0) return;
+  const el = document.getElementById('chat-messages');
+  el.innerHTML = chatHistory.map(m => {
+    const cls  = m.role === 'user' ? 'user' : 'assistant';
+    const html = m.content
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br>');
+    return `<div class="chat-msg ${cls}">${html}</div>`;
+  }).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+async function sendChat() {
+  if (!configured || chatLoading) return;
+
+  const input = document.getElementById('chat-input');
+  const text  = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  chatHistory.push({ role: 'user', content: text });
+  renderMessages();
+
+  chatLoading = true;
+  document.getElementById('chat-send-btn').disabled = true;
+
+  const msgs    = document.getElementById('chat-messages');
+  const thinkEl = document.createElement('div');
+  thinkEl.className   = 'chat-msg thinking';
+  thinkEl.textContent = 'thinking…';
+  msgs.appendChild(thinkEl);
+  msgs.scrollTop = msgs.scrollHeight;
+
+  try {
+    await new Promise(resolve => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', PROXY_ENDPOINT);
+      xhr.setRequestHeader('content-type', 'application/json');
+
+      // Optional shared secret — proxy checks this header to block
+      // casual scripted abuse. Not a substitute for origin validation.
+      if (PROXY_SECRET) xhr.setRequestHeader('x-proxy-secret', PROXY_SECRET);
+
+      xhr.onload = () => {
+        thinkEl.remove();
+        try {
+          const data = JSON.parse(xhr.responseText);
+          const reply = xhr.status === 200
+            ? (data.content?.[0]?.text || '(empty response)')
+            : `Error ${xhr.status}: ${data?.error?.message || xhr.responseText}`;
+          chatHistory.push({ role: 'assistant', content: reply });
+        } catch (e) {
+          chatHistory.push({ role: 'assistant', content: 'Parse error: ' + e.message });
+        }
+        resolve();
+      };
+      xhr.onerror = () => {
+        thinkEl.remove();
+        chatHistory.push({ role: 'assistant', content: 'Network error — is the proxy running?' });
+        resolve();
+      };
+
+      // The system prompt is built dynamically from NODE_DATA + EDGES at
+      // call time. Pinned node context is injected as a focused block.
+      xhr.send(JSON.stringify({
+        model:      'claude-sonnet-4-5',
+        max_tokens: 1024,
+        system:     buildSystemPrompt(),
+        messages:   chatHistory,
+      }));
+    });
+  } catch (e) {
+    thinkEl.remove();
+    chatHistory.push({ role: 'assistant', content: 'Error: ' + e.message });
+  }
+
+  renderMessages();
+  chatLoading = false;
+  document.getElementById('chat-send-btn').disabled = false;
+  document.getElementById('chat-input').focus();
+}
+
+function handleChatKey(e) {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    e.preventDefault();
+    sendChat();
+  }
+}
+
+// Boot
+initChat();
+</script>
+</body>
+</html>
